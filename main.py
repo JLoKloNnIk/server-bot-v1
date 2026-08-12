@@ -13,7 +13,7 @@ from config import BOT_TOKEN
 from database import init_db, DATABASE_URL
 import asyncpg
 
-ADMIN_ID = 7055472251  # ← ЗАМЕНИТЕ на свой Telegram ID
+ADMIN_ID = 123456789  # ← ЗАМЕНИТЕ на свой Telegram ID
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -44,7 +44,7 @@ class FilterForm(StatesGroup):
 
 def main_menu_keyboard(has_profile: bool = False):
     keyboard = [
-        [KeyboardButton(text="✨ Смотреть анкеты")],  # длинная и первая
+        [KeyboardButton(text="✨ Смотреть анкеты")],
     ]
     if not has_profile:
         keyboard.append([KeyboardButton(text="📝 Заполнить анкету")])
@@ -67,7 +67,20 @@ async def show_menu(message: types.Message):
             name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
             if name:
                 has_profile = True
-    await message.answer("Главное меню:", reply_markup=main_menu_keyboard(has_profile))
+                user_name = name
+            else:
+                user_name = "друг"
+
+    # Эффект "печатает..."
+    await bot.send_chat_action(chat_id=uid, action="typing")
+
+    menu_text = (
+        "━━━━━━━━━━━━━━━━━\n"
+        f"👋 Привет, <b>{user_name}</b>!\n"
+        "━━━━━━━━━━━━━━━━━\n"
+        "Выберите действие:"
+    )
+    await message.answer(menu_text, parse_mode="HTML", reply_markup=main_menu_keyboard(has_profile))
 
 # ---------- Форматирование профиля ----------
 def format_profile(row):
@@ -143,9 +156,10 @@ async def start(message: types.Message, command: CommandObject, state: FSMContex
         await show_menu(message)
 
 # ---------- Просмотр своего профиля ----------
-@dp.message(F.text == "👤 Мой профиль")
+@dp.message(F.text == "👤 Профиль")
 async def my_profile(message: types.Message):
     uid = message.from_user.id
+    await bot.send_chat_action(chat_id=uid, action="typing")
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", uid)
@@ -156,10 +170,10 @@ async def my_profile(message: types.Message):
         else:
             await message.answer(profile_text, parse_mode="HTML")
     else:
-        await message.answer("Профиль ещё не создан. Нажмите '✏️ Заполнить анкету'.")
+        await message.answer("Профиль ещё не создан. Нажмите '📝 Заполнить анкету'.")
 
 # ---------- Заполнение/редактирование анкеты ----------
-@dp.message(F.text == "✏️ Заполнить анкету")
+@dp.message(F.text == "📝 Заполнить анкету")
 async def start_profile(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -262,9 +276,10 @@ async def save_profile(message: types.Message, state: FSMContext):
     await show_menu(message)
 
 # ---------- Поиск анкет ----------
-@dp.message(F.text == "🔍 Смотреть анкеты")
+@dp.message(F.text == "✨ Смотреть анкеты")
 async def search(message: types.Message):
     uid = message.from_user.id
+    await bot.send_chat_action(chat_id=uid, action="typing")
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             # Фильтры
@@ -302,8 +317,9 @@ async def search(message: types.Message):
                 return
             target_id = row['user_id']
             caption = (
-                f"👤 <b>{row['name']}</b>, {row['age']}\n"
-                f"📍 {row['city'] or 'Город не указан'}"
+                f"✨ <b>{row['name']}</b>, {row['age']}\n"
+                f"📍 {row['city'] or 'Город не указан'}\n"
+                f"{'─' * 15}"
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [
@@ -361,7 +377,7 @@ async def like(call: types.CallbackQuery, state: FSMContext):
                 await call.answer("Сначала создайте анкету!", show_alert=True)
                 return
             if balance <= 0:
-                await call.answer("У вас закончились лайки! Пополните через 💰 Донат или пригласите друзей.", show_alert=True)
+                await call.answer("У вас закончились лайки! Пополните через 💎 Донат или пригласите друзей.", show_alert=True)
                 return
 
             # Сохраняем лайк и уменьшаем баланс
@@ -411,7 +427,7 @@ async def skip(call: types.CallbackQuery):
     await search(call.message)
 
 # ---------- Фильтры ----------
-@dp.message(F.text == "⚙️ Фильтры")
+@dp.message(F.text == "🛠 Фильтры")
 async def filter_menu(message: types.Message):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -527,7 +543,7 @@ async def filter_city_set(message: types.Message, state: FSMContext):
     await message.answer(f"Город для поиска: {city}")
 
 # ---------- Чаты ----------
-@dp.message(F.text == "💬 Мои чаты")
+@dp.message(F.text == "💬 Чаты")
 async def my_chats(message: types.Message):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -651,6 +667,9 @@ async def chat_message(message: types.Message, state: FSMContext):
         async with pool.acquire() as conn:
             sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
 
+    # Эффект набора текста
+    await bot.send_chat_action(chat_id=other_id, action="typing")
+
     # Определяем, нужно ли отправлять кнопку "Ответить"
     reply_markup = None
     if active_chats.get(other_id) != uid:
@@ -732,7 +751,7 @@ async def report_user(call: types.CallbackQuery):
     await call.answer()
 
 # ---------- Донат ----------
-@dp.message(F.text == "💰 Донат")
+@dp.message(F.text == "💎 Донат")
 async def donate(message: types.Message):
     prices = [LabeledPrice(label="5 дополнительных лайков", amount=50)]
     await message.answer_invoice(
@@ -758,7 +777,7 @@ async def successful_payment(message: types.Message):
     await message.answer("✅ Спасибо! Вы получили +5 лайков.")
 
 # ---------- Реферальная система ----------
-@dp.message(F.text == "🔗 Моя реферальная ссылка")
+@dp.message(F.text == "🎁 Рефералы")
 async def my_ref(message: types.Message):
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
@@ -770,7 +789,7 @@ async def my_ref(message: types.Message):
             f"Ваша реферальная ссылка:\n{link}\nЗа каждого друга вы получаете +3 лайка."
         )
     else:
-        await message.answer("Сначала создайте анкету через кнопку '✏️ Заполнить анкету'.")
+        await message.answer("Сначала создайте анкету через кнопку '📝 Заполнить анкету'.")
 
 # ---------- Админ-панель ----------
 @dp.message(Command("admin"))
