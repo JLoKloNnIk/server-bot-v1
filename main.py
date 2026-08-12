@@ -586,6 +586,7 @@ async def admin_panel(message: types.Message):
 
 # ---------- Запуск ----------
 async def main():
+    print("DATABASE_URL:", DATABASE_URL)
     await init_db()
     print("Бот запущен...")
     await bot.delete_webhook(drop_pending_updates=True)
