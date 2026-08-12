@@ -311,6 +311,7 @@ async def like(call: types.CallbackQuery):
             await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2) ON CONFLICT DO NOTHING", uid, target)
             mutual = await conn.fetchrow("SELECT * FROM likes WHERE from_user=$1 AND to_user=$2", target, uid)
             if mutual:
+                # Взаимный лайк — создаём мэтч
                 user1, user2 = min(uid, target), max(uid, target)
                 await conn.execute("INSERT INTO matches (user1, user2) VALUES ($1,$2) ON CONFLICT DO NOTHING", user1, user2)
                 name_uid = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
@@ -321,6 +322,11 @@ async def like(call: types.CallbackQuery):
                 except:
                     pass
             else:
+                # Отправляем уведомление получателю (анонимно)
+                try:
+                    await bot.send_message(target, "❤️ Кто-то лайкнул вашу анкету! Зайдите в поиск, чтобы возможно ответить взаимностью.")
+                except Exception:
+                    pass
                 await call.message.answer("Лайк отправлен! Ждите ответа.")
     await call.message.delete()
     await search(call.message)
