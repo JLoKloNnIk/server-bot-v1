@@ -1,7 +1,7 @@
 import asyncpg
 import os
 
-DATABASE_URL = "postgresql://postgres:QLgvunyttkJeXGEgJMjqzNIHgqihIjnO@postgres.railway.internal:5432/railway"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
