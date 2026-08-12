@@ -548,11 +548,31 @@ async def start_chat(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(ChatState.active_chat, F.text == "🚪 Выйти из чата")
 async def exit_chat_button(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
     data = await state.get_data()
     other_id = data.get("chat_with")
     await state.clear()
     await show_menu(message)
+
     if other_id:
+        # Удаляем матч, чтобы закрыть комнату для обоих
+        async with asyncpg.create_pool(DATABASE_URL) as pool:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
+                    uid, other_id
+                )
+
+        # Уведомляем второго пользователя
+        try:
+            await bot.send_message(
+                other_id,
+                "🚪 Собеседник вышел из чата. Комната закрыта."
+            )
+        except:
+            pass
+
+        # Предлагаем действия текущему пользователю
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{other_id}"),
@@ -563,6 +583,7 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
 
 @dp.message(ChatState.active_chat, F.text)
 async def chat_message(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
     data = await state.get_data()
     other_id = data.get("chat_with")
     if not other_id:
@@ -571,21 +592,41 @@ async def chat_message(message: types.Message, state: FSMContext):
         await show_menu(message)
         return
 
+    # Проверяем, существует ли ещё матч (чат открыт)
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
-            sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", message.from_user.id)
+            match_exists = await conn.fetchval(
+                "SELECT 1 FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
+                uid, other_id
+            )
+    if not match_exists:
+        await message.answer("Этот чат закрыт, так как собеседник вышел.")
+        await state.clear()
+        await show_menu(message)
+        return
+
+    # Получаем имя отправителя
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
+
+    # Создаём клавиатуру с кнопкой "Ответить"
+    reply_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ответить", callback_data=f"chat_{uid}")]
+    ])
+
     try:
-        await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}")
+        await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}", reply_markup=reply_kb)
     except Exception as e:
         await message.answer(f"Не удалось отправить сообщение: {e}")
         return
 
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
-            match_id = f"{min(message.from_user.id, other_id)}_{max(message.from_user.id, other_id)}"
+            match_id = f"{min(uid, other_id)}_{max(uid, other_id)}"
             await conn.execute(
                 "INSERT INTO messages (match_id, sender_id, text) VALUES ($1,$2,$3)",
-                match_id, message.from_user.id, message.text
+                match_id, uid, message.text
             )
 
 # ---------- Блокировка и жалоба ----------
