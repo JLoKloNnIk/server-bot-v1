@@ -169,3 +169,21 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+from aiohttp import web
+
+async def healthcheck(request):
+    return web.Response(text="OK")
+
+async def main():
+    await init_db()
+    print("Бот запущено...")
+    # запускаємо простий веб-сервер на порту, який дає Railway
+    app = web.Application()
+    app.router.add_get('/', healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8000)))
+    await site.start()
+    # тепер запускаємо polling
+    await dp.start_polling(bot)
