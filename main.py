@@ -42,19 +42,29 @@ class FilterForm(StatesGroup):
     waiting_for_max_age = State()
     waiting_for_city = State()
 
-def main_menu_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="✏️ Заполнить анкету")],
-            [KeyboardButton(text="🔍 Смотреть анкеты"), KeyboardButton(text="💰 Донат")],
-            [KeyboardButton(text="🔗 Моя реферальная ссылка")],
-            [KeyboardButton(text="⚙️ Фильтры"), KeyboardButton(text="💬 Мои чаты")]
-        ],
-        resize_keyboard=True
-    )
+def main_menu_keyboard(has_profile: bool = False):
+    keyboard = [
+        [KeyboardButton(text="🔍 Смотреть анкеты")],
+        [KeyboardButton(text="👤 Мой профиль")],
+    ]
+    if not has_profile:
+        keyboard.append([KeyboardButton(text="✏️ Заполнить анкету")])
+    keyboard.extend([
+        [KeyboardButton(text="💰 Донат")],
+        [KeyboardButton(text="🔗 Моя реферальная ссылка")],
+        [KeyboardButton(text="⚙️ Фильтры"), KeyboardButton(text="💬 Мои чаты")]
+    ])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 async def show_menu(message: types.Message):
-    await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+    uid = message.from_user.id
+    has_profile = False
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
+            if name:
+                has_profile = True
+    await message.answer("Главное меню:", reply_markup=main_menu_keyboard(has_profile))
 
 # ---------- Форматирование профиля ----------
 def format_profile(row):
@@ -74,7 +84,6 @@ def format_profile(row):
 # ---------- Открытие чата ----------
 async def open_chat(user_id, other_id, message: types.Message):
     """Открывает чат для пользователя (отправляет историю и клавиатуру)"""
-    # Запоминаем активный чат
     active_chats[user_id] = other_id
 
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -583,11 +592,18 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
                     uid, other_id
                 )
 
-        # Уведомляем второго пользователя
+        # Уведомляем второго пользователя с кнопками "Заблокировать" и "Пожаловаться"
         try:
+            block_report_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{uid}"),
+                    InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"reportmenu_{uid}")
+                ]
+            ])
             await bot.send_message(
                 other_id,
-                "🚪 Собеседник вышел из чата. Комната закрыта."
+                "🚪 Собеседник вышел из чата. Комната закрыта.\nВы можете заблокировать или пожаловаться на него.",
+                reply_markup=block_report_kb
             )
         except:
             pass
@@ -596,7 +612,7 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{other_id}"),
-                InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"report_{other_id}")
+                InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"reportmenu_{other_id}")
             ]
         ])
         await message.answer("Вы вышли из чата. Что хотите сделать?", reply_markup=kb)
@@ -622,7 +638,6 @@ async def chat_message(message: types.Message, state: FSMContext):
     if not match_exists:
         await message.answer("Этот чат закрыт, так как собеседник вышел.")
         await state.clear()
-        # Удаляем из активных чатов
         if uid in active_chats:
             del active_chats[uid]
         await show_menu(message)
@@ -634,7 +649,6 @@ async def chat_message(message: types.Message, state: FSMContext):
             sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
 
     # Определяем, нужно ли отправлять кнопку "Ответить"
-    # Если получатель сейчас активен в чате с нами, кнопку не отправляем
     reply_markup = None
     if active_chats.get(other_id) != uid:
         reply_markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -658,7 +672,7 @@ async def chat_message(message: types.Message, state: FSMContext):
                 match_id, uid, message.text
             )
 
-# ---------- Блокировка и жалоба ----------
+# ---------- Блокировка ----------
 @dp.callback_query(F.data.startswith("block_"))
 async def block_user(call: types.CallbackQuery):
     blocked_id = int(call.data.split("_")[1])
@@ -679,16 +693,38 @@ async def block_user(call: types.CallbackQuery):
     await call.message.answer("🚫 Пользователь заблокирован. Он больше не появится в поиске.")
     await call.answer()
 
+# ---------- Жалобы ----------
+# Шаг 1: показываем варианты причин
+@dp.callback_query(F.data.startswith("reportmenu_"))
+async def report_menu(call: types.CallbackQuery):
+    reported_id = int(call.data.split("_")[1])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="18+ контент", callback_data=f"report_{reported_id}_18+ контент")],
+        [InlineKeyboardButton(text="Игнор", callback_data=f"report_{reported_id}_Игнор")],
+        [InlineKeyboardButton(text="Оскорбления", callback_data=f"report_{reported_id}_Оскорбления")],
+        [InlineKeyboardButton(text="Продажа услуг", callback_data=f"report_{reported_id}_Продажа услуг")],
+        [InlineKeyboardButton(text="Попрошайка", callback_data=f"report_{reported_id}_Попрошайка")]
+    ])
+    await call.message.answer("Выберите причину жалобы:", reply_markup=kb)
+    await call.answer()
+
+# Шаг 2: сохраняем жалобу
 @dp.callback_query(F.data.startswith("report_"))
 async def report_user(call: types.CallbackQuery):
-    reported_id = int(call.data.split("_")[1])
+    # Формат: report_<reported_id>_<reason>
+    parts = call.data.split("_", 2)  # максимум 3 части
+    if len(parts) < 3:
+        await call.answer("Ошибка, попробуйте ещё раз.", show_alert=True)
+        return
+    reported_id = int(parts[1])
+    reason = parts[2]
     uid = call.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO reports (reporter_id, reported_id, reason)
                 VALUES ($1, $2, $3)
-            """, uid, reported_id, "Пожаловался из чата")
+            """, uid, reported_id, reason)
     await call.message.answer("⚠️ Жалоба отправлена администрации. Спасибо!")
     await call.answer()
 
