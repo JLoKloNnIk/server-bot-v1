@@ -6,6 +6,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
     try:
+        # Таблица пользователей
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -15,6 +16,8 @@ async def init_db():
                 city TEXT,
                 gender TEXT,
                 photo_id TEXT,
+                description TEXT,
+                interests TEXT,
                 ref_code TEXT UNIQUE,
                 referred_by BIGINT,
                 balance INTEGER DEFAULT 5,
@@ -22,6 +25,11 @@ async def init_db():
             )
         ''')
 
+        # Добавляем недостающие колонки (для старых баз)
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS description TEXT")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS interests TEXT")
+
+        # Остальные таблицы без изменений
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS likes (
                 from_user BIGINT,

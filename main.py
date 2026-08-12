@@ -13,7 +13,7 @@ from config import BOT_TOKEN
 from database import init_db, DATABASE_URL
 import asyncpg
 
-ADMIN_ID = 7055472251  # ← ЗАМІНІТЬ на свій Telegram ID
+ADMIN_ID = 123456789  # ← ЗАМЕНИТЕ на свой Telegram ID
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -21,13 +21,15 @@ dp = Dispatcher(storage=MemoryStorage())
 def get_ref_code(user_id):
     return hashlib.md5(str(user_id).encode()).hexdigest()[:8]
 
-# ---------- Стани ----------
+# ---------- Состояния ----------
 class ProfileForm(StatesGroup):
     name = State()
     age = State()
     city = State()
     gender = State()
     photo = State()
+    description = State()
+    interests = State()
 
 class ChatState(StatesGroup):
     active_chat = State()
@@ -40,18 +42,33 @@ class FilterForm(StatesGroup):
 def main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="👤 Моя анкета")],
-            [KeyboardButton(text="🔍 Дивитись анкети"), KeyboardButton(text="💰 Донат")],
-            [KeyboardButton(text="🔗 Моє реферальне посилання")],
-            [KeyboardButton(text="⚙️ Фільтри"), KeyboardButton(text="💬 Мої чати")]
+            [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="✏️ Заполнить анкету")],
+            [KeyboardButton(text="🔍 Смотреть анкеты"), KeyboardButton(text="💰 Донат")],
+            [KeyboardButton(text="🔗 Моя реферальная ссылка")],
+            [KeyboardButton(text="⚙️ Фильтры"), KeyboardButton(text="💬 Мои чаты")]
         ],
         resize_keyboard=True
     )
 
 async def show_menu(message: types.Message):
-    await message.answer("Головне меню:", reply_markup=main_menu_keyboard())
+    await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
 
-# ---------- Старт і реєстрація ----------
+# ---------- Форматирование профиля ----------
+def format_profile(row):
+    if not row:
+        return "Профиль не заполнен."
+    text = (
+        f"👤 <b>{row['name']}</b>, {row['age']}\n"
+        f"📍 {row['city'] or 'Город не указан'}\n"
+        f"🚻 {row['gender'] or 'Пол не указан'}"
+    )
+    if row.get('description'):
+        text += f"\n📝 <b>О себе:</b> {row['description']}"
+    if row.get('interests'):
+        text += f"\n🎯 <b>Интересы:</b> {row['interests']}"
+    return text
+
+# ---------- Старт и регистрация ----------
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandObject, state: FSMContext):
     user_id = message.from_user.id
@@ -74,57 +91,110 @@ async def start(message: types.Message, command: CommandObject, state: FSMContex
                     await conn.execute("INSERT INTO referrals (inviter_id, invited_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", invited_by, user_id)
                     await conn.execute("UPDATE users SET balance = balance + 3 WHERE user_id=$1", invited_by)
                     await conn.execute("UPDATE users SET balance = balance + 3 WHERE user_id=$1", user_id)
-                    await message.answer("🎉 Вас запросив друг! Ви обоє отримали +3 безкоштовні лайки.")
+                    await message.answer("🎉 Вас пригласил друг! Вы оба получили +3 бесплатных лайка.")
         await state.clear()
         await show_menu(message)
 
-# ---------- Анкета ----------
-@dp.message(F.text == "👤 Моя анкета")
+# ---------- Просмотр своего профиля ----------
+@dp.message(F.text == "👤 Мой профиль")
+async def my_profile(message: types.Message):
+    uid = message.from_user.id
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", uid)
+    if row:
+        profile_text = format_profile(row)
+        if row['photo_id']:
+            await message.answer_photo(row['photo_id'], caption=profile_text, parse_mode="HTML")
+        else:
+            await message.answer(profile_text, parse_mode="HTML")
+    else:
+        await message.answer("Профиль ещё не создан. Нажмите '✏️ Заполнить анкету'.")
+
+# ---------- Заполнение/редактирование анкеты ----------
+@dp.message(F.text == "✏️ Заполнить анкету")
 async def start_profile(message: types.Message, state: FSMContext):
+    # Проверяем, есть ли уже профиль
+    uid = message.from_user.id
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT name, age, city, gender, description, interests FROM users WHERE user_id=$1", uid)
+    if user:
+        await message.answer(
+            "У вас уже есть анкета. При заполнении она будет перезаписана.\n"
+            "Продолжить?"
+        )
     await state.set_state(ProfileForm.name)
-    await message.answer("Як вас звати?")
+    await message.answer("Как вас зовут?")
 
 @dp.message(ProfileForm.name)
 async def profile_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
     await state.set_state(ProfileForm.age)
-    await message.answer("Скільки вам років? (число)")
+    await message.answer("Сколько вам лет? (число)")
 
 @dp.message(ProfileForm.age)
 async def profile_age(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("Будь ласка, введіть число.")
+        await message.answer("Пожалуйста, введите число.")
         return
     age = int(message.text)
     if age < 16 or age > 100:
-        await message.answer("Вік має бути від 16 до 100 років.")
+        await message.answer("Возраст должен быть от 16 до 100 лет.")
         return
     await state.update_data(age=age)
     await state.set_state(ProfileForm.city)
-    await message.answer("З якого ви міста?")
+    await message.answer("Из какого вы города?")
 
 @dp.message(ProfileForm.city)
 async def profile_city(message: types.Message, state: FSMContext):
     await state.update_data(city=message.text)
     await state.set_state(ProfileForm.gender)
     kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Чоловік")], [KeyboardButton(text="Жінка")]],
+        keyboard=[[KeyboardButton(text="Мужчина")], [KeyboardButton(text="Женщина")]],
         resize_keyboard=True, one_time_keyboard=True
     )
-    await message.answer("Ваша стать?", reply_markup=kb)
+    await message.answer("Ваш пол?", reply_markup=kb)
 
 @dp.message(ProfileForm.gender)
 async def profile_gender(message: types.Message, state: FSMContext):
-    if message.text not in ("Чоловік", "Жінка"):
-        await message.answer("Будь ласка, оберіть з клавіатури.")
+    if message.text not in ("Мужчина", "Женщина"):
+        await message.answer("Пожалуйста, выберите из клавиатуры.")
         return
     await state.update_data(gender=message.text)
     await state.set_state(ProfileForm.photo)
-    await message.answer("Тепер надішліть ваше фото (обов'язково).", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Теперь отправьте ваше фото (обязательно).", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(ProfileForm.photo, F.photo)
 async def profile_photo(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
+    await state.update_data(photo_id=photo_id)
+    await state.set_state(ProfileForm.description)
+    await message.answer("Расскажите о себе (или нажмите /skip, чтобы пропустить)")
+
+@dp.message(ProfileForm.description, Command("skip"))
+async def profile_description_skip(message: types.Message, state: FSMContext):
+    await state.update_data(description=None)
+    await state.set_state(ProfileForm.interests)
+    await message.answer("Теперь укажите ваши интересы через запятую (например: спорт, музыка, кино). Или /skip.")
+
+@dp.message(ProfileForm.description)
+async def profile_description(message: types.Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    await state.set_state(ProfileForm.interests)
+    await message.answer("Теперь укажите ваши интересы через запятую (например: спорт, музыка, кино). Или /skip.")
+
+@dp.message(ProfileForm.interests, Command("skip"))
+async def profile_interests_skip(message: types.Message, state: FSMContext):
+    await state.update_data(interests=None)
+    await save_profile(message, state)
+
+@dp.message(ProfileForm.interests)
+async def profile_interests(message: types.Message, state: FSMContext):
+    await state.update_data(interests=message.text)
+    await save_profile(message, state)
+
+async def save_profile(message: types.Message, state: FSMContext):
     data = await state.get_data()
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -132,26 +202,26 @@ async def profile_photo(message: types.Message, state: FSMContext):
             user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id=$1", uid)
             if user:
                 await conn.execute(
-                    "UPDATE users SET name=$1, age=$2, city=$3, gender=$4, photo_id=$5 WHERE user_id=$6",
-                    data["name"], data["age"], data["city"], data["gender"], photo_id, uid
+                    "UPDATE users SET name=$1, age=$2, city=$3, gender=$4, photo_id=$5, description=$6, interests=$7 WHERE user_id=$8",
+                    data["name"], data["age"], data["city"], data["gender"], data.get("photo_id"), data.get("description"), data.get("interests"), uid
                 )
             else:
                 code = get_ref_code(uid)
                 await conn.execute(
-                    "INSERT INTO users (user_id, username, name, age, city, gender, photo_id, ref_code, balance) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                    uid, message.from_user.username, data["name"], data["age"], data["city"], data["gender"], photo_id, code, 5
+                    "INSERT INTO users (user_id, username, name, age, city, gender, photo_id, description, interests, ref_code, balance) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                    uid, message.from_user.username, data["name"], data["age"], data["city"], data["gender"], data.get("photo_id"), data.get("description"), data.get("interests"), code, 5
                 )
     await state.clear()
-    await message.answer("✅ Анкету збережено з фото!")
+    await message.answer("✅ Анкета сохранена!")
     await show_menu(message)
 
-# ---------- Пошук анкет ----------
-@dp.message(F.text == "🔍 Дивитись анкети")
+# ---------- Поиск анкет ----------
+@dp.message(F.text == "🔍 Смотреть анкеты")
 async def search(message: types.Message):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
-            # Фільтри
+            # Фильтры
             filt = await conn.fetchrow("SELECT * FROM filters WHERE user_id=$1", uid)
             preferred_gender = filt['preferred_gender'] if filt else None
             min_age = filt['min_age'] if filt else None
@@ -159,7 +229,7 @@ async def search(message: types.Message):
             city = filt['city'] if filt else None
 
             query = """
-                SELECT user_id, name, age, city, photo_id FROM users
+                SELECT user_id, name, age, city, photo_id, description, interests FROM users
                 WHERE user_id != $1 AND user_id NOT IN
                     (SELECT to_user FROM likes WHERE from_user = $1)
             """
@@ -180,19 +250,58 @@ async def search(message: types.Message):
             query += " ORDER BY RANDOM() LIMIT 1"
             row = await conn.fetchrow(query, *params)
             if not row:
-                await message.answer("😔 Поки немає анкет за вашими фільтрами.")
+                await message.answer("😔 Пока нет анкет по вашим фильтрам.")
                 return
-            target_id, name, age, city, photo_id = row['user_id'], row['name'], row['age'], row['city'], row['photo_id']
-            text = f"{name}, {age}, {city}"
+            target_id = row['user_id']
+            # Краткая информация
+            caption = (
+                f"👤 <b>{row['name']}</b>, {row['age']}\n"
+                f"📍 {row['city'] or 'Город не указан'}"
+            )
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❤️", callback_data=f"like_{target_id}"),
-                 InlineKeyboardButton(text="👎", callback_data="skip")]
+                [
+                    InlineKeyboardButton(text="❤️", callback_data=f"like_{target_id}"),
+                    InlineKeyboardButton(text="👎", callback_data="skip"),
+                    InlineKeyboardButton(text="Подробнее", callback_data=f"details_{target_id}")
+                ]
             ])
-            if photo_id:
-                await message.answer_photo(photo_id, caption=text, reply_markup=kb)
+            if row['photo_id']:
+                await message.answer_photo(row['photo_id'], caption=caption, parse_mode="HTML", reply_markup=kb)
             else:
-                await message.answer(text, reply_markup=kb)
+                await message.answer(caption, parse_mode="HTML", reply_markup=kb)
 
+# Обработчик кнопки "Подробнее"
+@dp.callback_query(F.data.startswith("details_"))
+async def show_details(call: types.CallbackQuery):
+    target_id = int(call.data.split("_")[1])
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", target_id)
+    if not user:
+        await call.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    text = format_profile(user)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❤️ Лайкнуть", callback_data=f"like_{target_id}"),
+            InlineKeyboardButton(text="👎", callback_data="skip")
+        ],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_search")]
+    ])
+
+    if user['photo_id']:
+        await call.message.answer_photo(user['photo_id'], caption=text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await call.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@dp.callback_query(F.data == "back_to_search")
+async def back_to_search(call: types.CallbackQuery):
+    await call.message.delete()
+    await search(call.message)
+
+# Обработчики лайков и дизлайков
 @dp.callback_query(F.data.startswith("like_"))
 async def like(call: types.CallbackQuery):
     target = int(call.data.split("_")[1])
@@ -204,16 +313,15 @@ async def like(call: types.CallbackQuery):
             if mutual:
                 user1, user2 = min(uid, target), max(uid, target)
                 await conn.execute("INSERT INTO matches (user1, user2) VALUES ($1,$2) ON CONFLICT DO NOTHING", user1, user2)
-                # Імена для сповіщення
                 name_uid = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
                 name_target = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", target)
-                await call.message.answer("💞 Взаємний лайк! Тепер ви можете спілкуватися у чаті.")
+                await call.message.answer("💞 Взаимный лайк! Теперь вы можете общаться в чате.")
                 try:
-                    await bot.send_message(target, f"💞 У вас новий матч з {name_uid}! Перейдіть у '💬 Мої чати'.")
+                    await bot.send_message(target, f"💞 У вас новый мэтч с {name_uid}! Перейдите в '💬 Мои чаты'.")
                 except:
                     pass
             else:
-                await call.message.answer("Лайк відправлено! Чекайте на відповідь.")
+                await call.message.answer("Лайк отправлен! Ждите ответа.")
     await call.message.delete()
     await search(call.message)
 
@@ -222,8 +330,8 @@ async def skip(call: types.CallbackQuery):
     await call.message.delete()
     await search(call.message)
 
-# ---------- Фільтри ----------
-@dp.message(F.text == "⚙️ Фільтри")
+# ---------- Фильтры ----------
+@dp.message(F.text == "⚙️ Фильтры")
 async def filter_menu(message: types.Message):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -231,18 +339,18 @@ async def filter_menu(message: types.Message):
             filt = await conn.fetchrow("SELECT * FROM filters WHERE user_id=$1", uid)
     if filt:
         text = (
-            f"Ваші фільтри:\n"
-            f"Стать: {filt['preferred_gender'] or 'будь-яка'}\n"
-            f"Вік: {filt['min_age'] or 'немає'} - {filt['max_age'] or 'немає'}\n"
-            f"Місто: {filt['city'] or 'будь-яке'}\n"
+            f"Ваши фильтры:\n"
+            f"Пол: {filt['preferred_gender'] or 'любой'}\n"
+            f"Возраст: {filt['min_age'] or 'нет'} - {filt['max_age'] or 'нет'}\n"
+            f"Город: {filt['city'] or 'любой'}\n"
         )
     else:
-        text = "Фільтри не встановлені."
+        text = "Фильтры не установлены."
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Стать", callback_data="filter_gender")],
-        [InlineKeyboardButton(text="Вік", callback_data="filter_age")],
-        [InlineKeyboardButton(text="Місто", callback_data="filter_city")],
-        [InlineKeyboardButton(text="Скинути всі", callback_data="filter_reset")]
+        [InlineKeyboardButton(text="Пол", callback_data="filter_gender")],
+        [InlineKeyboardButton(text="Возраст", callback_data="filter_age")],
+        [InlineKeyboardButton(text="Город", callback_data="filter_city")],
+        [InlineKeyboardButton(text="Сбросить все", callback_data="filter_reset")]
     ])
     await message.answer(text, reply_markup=kb)
 
@@ -252,17 +360,17 @@ async def reset_filters(call: types.CallbackQuery):
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM filters WHERE user_id=$1", uid)
-    await call.message.answer("Фільтри скинуто.")
+    await call.message.answer("Фильтры сброшены.")
     await call.answer()
 
 @dp.callback_query(F.data == "filter_gender")
 async def filter_gender_start(call: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Чоловік", callback_data="gender_male")],
-        [InlineKeyboardButton(text="Жінка", callback_data="gender_female")],
-        [InlineKeyboardButton(text="Будь-яка", callback_data="gender_any")]
+        [InlineKeyboardButton(text="Мужчина", callback_data="gender_male")],
+        [InlineKeyboardButton(text="Женщина", callback_data="gender_female")],
+        [InlineKeyboardButton(text="Любой", callback_data="gender_any")]
     ])
-    await call.message.answer("Оберіть бажану стать:", reply_markup=kb)
+    await call.message.answer("Выберите желаемый пол:", reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith("gender_"))
@@ -275,39 +383,39 @@ async def filter_gender_set(call: types.CallbackQuery):
                 INSERT INTO filters (user_id, preferred_gender) VALUES ($1,$2)
                 ON CONFLICT (user_id) DO UPDATE SET preferred_gender=$2
             """, uid, val)
-    await call.message.answer(f"Стать фільтру: {val}")
+    await call.message.answer(f"Фильтр по полу: {val}")
     await call.answer()
 
 @dp.callback_query(F.data == "filter_age")
 async def filter_age_start(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(FilterForm.waiting_for_min_age)
-    await call.message.answer("Введіть мінімальний вік (число):")
+    await call.message.answer("Введите минимальный возраст (число):")
     await call.answer()
 
 @dp.message(FilterForm.waiting_for_min_age)
 async def filter_min_age(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("Будь ласка, введіть число.")
+        await message.answer("Пожалуйста, введите число.")
         return
     mn = int(message.text)
     await state.update_data(min_age=mn)
     await state.set_state(FilterForm.waiting_for_max_age)
-    await message.answer("Тепер введіть максимальний вік (число):")
+    await message.answer("Теперь введите максимальный возраст (число):")
 
 @dp.message(FilterForm.waiting_for_max_age)
 async def filter_max_age(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("Будь ласка, введіть число.")
+        await message.answer("Пожалуйста, введите число.")
         return
     mx = int(message.text)
     data = await state.get_data()
     mn = data.get("min_age")
     if mn is None:
-        await message.answer("Помилка, почніть заново.")
+        await message.answer("Ошибка, начните заново.")
         await state.clear()
         return
     if mn > mx:
-        await message.answer("Мінімальний вік не може бути більшим за максимальний.")
+        await message.answer("Минимальный возраст не может быть больше максимального.")
         return
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -317,12 +425,12 @@ async def filter_max_age(message: types.Message, state: FSMContext):
                 ON CONFLICT (user_id) DO UPDATE SET min_age=$2, max_age=$3
             """, uid, mn, mx)
     await state.clear()
-    await message.answer(f"Віковий фільтр встановлено: {mn}-{mx}")
+    await message.answer(f"Возрастной фильтр установлен: {mn}-{mx}")
 
 @dp.callback_query(F.data == "filter_city")
 async def filter_city_start(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(FilterForm.waiting_for_city)
-    await call.message.answer("Введіть місто для пошуку:")
+    await call.message.answer("Введите город для поиска:")
     await call.answer()
 
 @dp.message(FilterForm.waiting_for_city)
@@ -336,10 +444,10 @@ async def filter_city_set(message: types.Message, state: FSMContext):
                 ON CONFLICT (user_id) DO UPDATE SET city=$2
             """, uid, city)
     await state.clear()
-    await message.answer(f"Місто для пошуку: {city}")
+    await message.answer(f"Город для поиска: {city}")
 
-# ---------- Чати ----------
-@dp.message(F.text == "💬 Мої чати")
+# ---------- Чаты ----------
+@dp.message(F.text == "💬 Мои чаты")
 async def my_chats(message: types.Message):
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -349,7 +457,7 @@ async def my_chats(message: types.Message):
                 WHERE user1=$1 OR user2=$1
             """, uid)
     if not matches:
-        await message.answer("У вас поки немає матчів.")
+        await message.answer("У вас пока нет мэтчей.")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for m in matches:
@@ -357,8 +465,8 @@ async def my_chats(message: types.Message):
         async with asyncpg.create_pool(DATABASE_URL) as pool:
             async with pool.acquire() as conn:
                 name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", other)
-        kb.inline_keyboard.append([InlineKeyboardButton(text=name or "Користувач", callback_data=f"chat_{other}")])
-    await message.answer("Оберіть співрозмовника:", reply_markup=kb)
+        kb.inline_keyboard.append([InlineKeyboardButton(text=name or "Пользователь", callback_data=f"chat_{other}")])
+    await message.answer("Выберите собеседника:", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("chat_"))
 async def start_chat(call: types.CallbackQuery, state: FSMContext):
@@ -372,16 +480,16 @@ async def start_chat(call: types.CallbackQuery, state: FSMContext):
             other_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", other_id)
 
     exit_kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🚪 Вийти з чату")]],
+        keyboard=[[KeyboardButton(text="🚪 Выйти из чата")]],
         resize_keyboard=True
     )
     await call.message.answer(
-        f"Ви спілкуєтесь з {other_name or 'Співрозмовник'}.\nНапишіть повідомлення або натисніть кнопку для виходу.",
+        f"Вы общаетесь с {other_name or 'Собеседник'}.\nНапишите сообщение или нажмите кнопку для выхода.",
         reply_markup=exit_kb
     )
     await call.answer()
 
-@dp.message(ChatState.active_chat, F.text == "🚪 Вийти з чату")
+@dp.message(ChatState.active_chat, F.text == "🚪 Выйти из чата")
 async def exit_chat_button(message: types.Message, state: FSMContext):
     await state.clear()
     await show_menu(message)
@@ -391,7 +499,7 @@ async def chat_message(message: types.Message, state: FSMContext):
     data = await state.get_data()
     other_id = data.get("chat_with")
     if not other_id:
-        await message.answer("Помилка, вийдіть з чату.")
+        await message.answer("Ошибка, выйдите из чата.")
         await state.clear()
         await show_menu(message)
         return
@@ -400,9 +508,9 @@ async def chat_message(message: types.Message, state: FSMContext):
         async with pool.acquire() as conn:
             sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", message.from_user.id)
     try:
-        await bot.send_message(other_id, f"💬 {sender_name or 'Користувач'}: {message.text}")
+        await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}")
     except Exception as e:
-        await message.answer(f"Не вдалося надіслати повідомлення: {e}")
+        await message.answer(f"Не удалось отправить сообщение: {e}")
         return
 
     async with asyncpg.create_pool(DATABASE_URL) as pool:
@@ -416,10 +524,10 @@ async def chat_message(message: types.Message, state: FSMContext):
 # ---------- Донат ----------
 @dp.message(F.text == "💰 Донат")
 async def donate(message: types.Message):
-    prices = [LabeledPrice(label="5 додаткових лайків", amount=50)]
+    prices = [LabeledPrice(label="5 дополнительных лайков", amount=50)]
     await message.answer_invoice(
-        title="Більше лайків",
-        description="Отримайте 5 лайків для пошуку",
+        title="Больше лайков",
+        description="Получите 5 лайков для поиска",
         payload="buy_likes",
         provider_token="",
         currency="XTR",
@@ -437,10 +545,10 @@ async def successful_payment(message: types.Message):
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE users SET balance = balance + 5 WHERE user_id=$1", uid)
-    await message.answer("✅ Дякуємо! Ви отримали +5 лайків.")
+    await message.answer("✅ Спасибо! Вы получили +5 лайков.")
 
-# ---------- Реферальна система ----------
-@dp.message(F.text == "🔗 Моє реферальне посилання")
+# ---------- Реферальная система ----------
+@dp.message(F.text == "🔗 Моя реферальная ссылка")
 async def my_ref(message: types.Message):
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
@@ -449,16 +557,16 @@ async def my_ref(message: types.Message):
         bot_info = await bot.get_me()
         link = f"https://t.me/{bot_info.username}?start={code}"
         await message.answer(
-            f"Ваше реферальне посилання:\n{link}\nЗа кожного друга ви отримуєте +3 лайки."
+            f"Ваша реферальная ссылка:\n{link}\nЗа каждого друга вы получаете +3 лайка."
         )
     else:
-        await message.answer("Спочатку створіть анкету через кнопку '👤 Моя анкета'.")
+        await message.answer("Сначала создайте анкету через кнопку '✏️ Заполнить анкету'.")
 
-# ---------- Адмін-панель ----------
+# ---------- Админ-панель ----------
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Немає доступу.")
+        await message.answer("⛔ Нет доступа.")
         return
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
@@ -467,11 +575,11 @@ async def admin_panel(message: types.Message):
             reports = await conn.fetchval("SELECT COUNT(*) FROM reports")
             recent = await conn.fetch("SELECT name, age, city FROM users ORDER BY created_at DESC LIMIT 5")
     text = f"📊 Статистика:\n"
-    text += f"👥 Користувачів: {users}\n"
-    text += f"💞 Матчів: {matches}\n"
-    text += f"⚠️ Скарг: {reports}\n\n"
+    text += f"👥 Пользователей: {users}\n"
+    text += f"💞 Мэтчей: {matches}\n"
+    text += f"⚠️ Жалоб: {reports}\n\n"
     if recent:
-        text += "Останні реєстрації:\n"
+        text += "Последние регистрации:\n"
         for r in recent:
             text += f"- {r['name']}, {r['age']}, {r['city']}\n"
     await message.answer(text)
@@ -479,7 +587,7 @@ async def admin_panel(message: types.Message):
 # ---------- Запуск ----------
 async def main():
     await init_db()
-    print("Бот запущено...")
+    print("Бот запущен...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
