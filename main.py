@@ -337,10 +337,10 @@ async def search(message: types.Message):
             max_age = filt['max_age'] if filt else None
             city = filt['city'] if filt else None
 
+            # Убрано исключение лайкнутых пользователей
             query = """
                 SELECT user_id, name, age, city, photo_id, description, interests FROM users
-                WHERE user_id != $1 AND user_id NOT IN
-                    (SELECT to_user FROM likes WHERE from_user = $1)
+                WHERE user_id != $1
                     AND user_id NOT IN (SELECT blocked_user_id FROM blocks WHERE user_id = $1)
                     AND user_id NOT IN (SELECT user_id FROM blocks WHERE blocked_user_id = $1)
             """
@@ -428,15 +428,15 @@ async def like(call: types.CallbackQuery, state: FSMContext):
                 await call.answer("У вас закончились лайки! Пополните через 💎 Донат или пригласите друзей.", show_alert=True)
                 return
 
-# Проверяем, есть ли уже лайк
-already_liked = await conn.fetchval("SELECT 1 FROM likes WHERE from_user=$1 AND to_user=$2", uid, target)
-if not already_liked:
-    # Добавляем лайк и уменьшаем баланс
-    await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2)", uid, target)
-    await conn.execute("UPDATE users SET balance = balance - 1 WHERE user_id=$1", uid)
-else:
-    await call.answer("Вы уже лайкали этого пользователя.", show_alert=True)
-    return
+            # Проверяем, есть ли уже лайк
+            already_liked = await conn.fetchval("SELECT 1 FROM likes WHERE from_user=$1 AND to_user=$2", uid, target)
+            if not already_liked:
+                # Добавляем лайк и уменьшаем баланс
+                await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2)", uid, target)
+                await conn.execute("UPDATE users SET balance = balance - 1 WHERE user_id=$1", uid)
+            else:
+                await call.answer("Вы уже лайкали этого пользователя.", show_alert=True)
+                return
 
             # Проверяем взаимность
             mutual = await conn.fetchrow("SELECT * FROM likes WHERE from_user=$1 AND to_user=$2", target, uid)
