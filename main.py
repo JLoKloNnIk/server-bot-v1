@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.fsm.context import FSMContext
@@ -51,7 +52,8 @@ def main_menu_keyboard(has_profile: bool = False):
     keyboard.extend([
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💎 Донат")],
         [KeyboardButton(text="🎁 Рефералы"), KeyboardButton(text="🛠 Фильтры")],
-        [KeyboardButton(text="💬 Чаты")]
+        [KeyboardButton(text="💬 Чаты")],
+        [KeyboardButton(text="📤 Поделиться")]
     ])
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
@@ -154,6 +156,52 @@ async def start(message: types.Message, command: CommandObject, state: FSMContex
                     await message.answer("🎉 Вас пригласил друг! Вы оба получили +3 бесплатных лайка.")
         await state.clear()
         await show_menu(message)
+
+# ---------- Ежедневный бонус ----------
+@dp.message(Command("daily"))
+async def daily_bonus(message: types.Message):
+    uid = message.from_user.id
+    now = datetime.datetime.now()
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            last = await conn.fetchval("SELECT last_daily FROM users WHERE user_id=$1", uid)
+            if last is None or (now - last).total_seconds() >= 86400:
+                await conn.execute("UPDATE users SET balance = balance + 2, last_daily = $1 WHERE user_id=$2", now, uid)
+                await message.answer("🎁 Вы получили 2 бесплатных лайка! Возвращайтесь завтра.")
+            else:
+                remaining = 86400 - (now - last).total_seconds()
+                hours = int(remaining // 3600)
+                minutes = int((remaining % 3600) // 60)
+                await message.answer(f"⏳ Следующий бонус через {hours} ч {minutes} мин.")
+
+# ---------- Помощь ----------
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
+    help_text = (
+        "🤖 <b>Помощь по боту знакомств</b>\n\n"
+        "✨ <b>Основные команды:</b>\n"
+        "/start – главное меню\n"
+        "/daily – ежедневный бонус (+2 лайка)\n"
+        "/help – эта справка\n\n"
+        "💡 <b>Как пользоваться:</b>\n"
+        "1. Заполните анкету (кнопка «📝 Заполнить анкету»).\n"
+        "2. Смотрите анкеты и ставьте лайки.\n"
+        "3. При взаимном лайке откроется чат.\n"
+        "4. Приглашайте друзей по реферальной ссылке и получайте +3 лайка за каждого.\n\n"
+        "💎 Донат пополняет баланс лайков.\n"
+        "⚙️ Фильтры помогут найти подходящего партнёра."
+    )
+    await message.answer(help_text, parse_mode="HTML")
+
+# ---------- Поделиться ----------
+@dp.message(F.text == "📤 Поделиться")
+async def share_bot(message: types.Message):
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}"
+    await message.answer(
+        f"🔗 Поделитесь ботом с друзьями:\n{link}\n\n"
+        "За каждого приглашённого друга вы получите +3 лайка!"
+    )
 
 # ---------- Просмотр своего профиля ----------
 @dp.message(F.text == "👤 Профиль")
@@ -602,19 +650,18 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
 
     await show_menu(message)
 
-if other_id:
-    async with asyncpg.create_pool(DATABASE_URL) as pool:
-        async with pool.acquire() as conn:
-            # Удаляем матч
-            await conn.execute(
-                "DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
-                uid, other_id
-            )
-            # Удаляем лайки, чтобы пользователи снова появлялись в поиске
-            await conn.execute(
-                "DELETE FROM likes WHERE (from_user=$1 AND to_user=$2) OR (from_user=$2 AND to_user=$1)",
-                uid, other_id
-            )
+    if other_id:
+        # Удаляем матч и лайки, чтобы пользователи снова появились в поиске
+        async with asyncpg.create_pool(DATABASE_URL) as pool:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
+                    uid, other_id
+                )
+                await conn.execute(
+                    "DELETE FROM likes WHERE (from_user=$1 AND to_user=$2) OR (from_user=$2 AND to_user=$1)",
+                    uid, other_id
+                )
 
         # Уведомляем второго пользователя с кнопками "Заблокировать" и "Пожаловаться"
         try:
