@@ -13,7 +13,7 @@ from config import BOT_TOKEN
 from database import init_db, DATABASE_URL
 import asyncpg
 
-ADMIN_ID = 123456789  # ← ЗАМЕНИТЕ на свой Telegram ID
+ADMIN_ID = 7055472251  # ← ЗАМЕНИТЕ на свой Telegram ID
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
