@@ -44,15 +44,14 @@ class FilterForm(StatesGroup):
 
 def main_menu_keyboard(has_profile: bool = False):
     keyboard = [
-        [KeyboardButton(text="🔍 Смотреть анкеты")],
-        [KeyboardButton(text="👤 Мой профиль")],
+        [KeyboardButton(text="🔍 Смотреть анкеты")],  # первая длинная кнопка
     ]
     if not has_profile:
-        keyboard.append([KeyboardButton(text="✏️ Заполнить анкету")])
+        keyboard.append([KeyboardButton(text="✏️ Заполнить анкету")])  # только для новых пользователей
     keyboard.extend([
-        [KeyboardButton(text="💰 Донат")],
-        [KeyboardButton(text="🔗 Моя реферальная ссылка")],
-        [KeyboardButton(text="⚙️ Фильтры"), KeyboardButton(text="💬 Мои чаты")]
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="💰 Донат")],
+        [KeyboardButton(text="🔗 Моя реферальная ссылка"), KeyboardButton(text="⚙️ Фильтры")],
+        [KeyboardButton(text="💬 Мои чаты")]
     ])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
