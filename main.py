@@ -534,13 +534,23 @@ async def my_chats(message: types.Message):
 async def start_chat(call: types.CallbackQuery, state: FSMContext):
     other_id = int(call.data.split("_")[1])
     uid = call.from_user.id
-    # Проверяем, не заблокирован ли
+    # Проверяем, существует ли матч (чат не закрыт)
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
+            match_exists = await conn.fetchval(
+                "SELECT 1 FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
+                uid, other_id
+            )
+            if not match_exists:
+                await call.answer("Чат закрыт, так как собеседник вышел.", show_alert=True)
+                await call.message.delete()
+                return
+
             blocked = await conn.fetchval("SELECT 1 FROM blocks WHERE user_id=$1 AND blocked_user_id=$2", uid, other_id)
             if blocked:
                 await call.answer("Вы заблокировали этого пользователя.", show_alert=True)
                 return
+
     await state.update_data(chat_with=other_id)
     await state.set_state(ChatState.active_chat)
     await open_chat(uid, other_id, call.message)
@@ -612,7 +622,7 @@ async def chat_message(message: types.Message, state: FSMContext):
 
     # Создаём клавиатуру с кнопкой "Ответить"
     reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ответить", callback_data=f"chat_{uid}")]
+        [InlineKeyboardButton(text="💬 Ответить", callback_data=f"chat_{uid}")]
     ])
 
     try:
