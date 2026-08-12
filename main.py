@@ -602,14 +602,19 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
 
     await show_menu(message)
 
-    if other_id:
-        # Удаляем матч, чтобы закрыть комнату для обоих
-        async with asyncpg.create_pool(DATABASE_URL) as pool:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
-                    uid, other_id
-                )
+if other_id:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            # Удаляем матч
+            await conn.execute(
+                "DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)",
+                uid, other_id
+            )
+            # Удаляем лайки, чтобы пользователи снова появлялись в поиске
+            await conn.execute(
+                "DELETE FROM likes WHERE (from_user=$1 AND to_user=$2) OR (from_user=$2 AND to_user=$1)",
+                uid, other_id
+            )
 
         # Уведомляем второго пользователя с кнопками "Заблокировать" и "Пожаловаться"
         try:
