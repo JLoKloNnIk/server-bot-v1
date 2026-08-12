@@ -18,6 +18,9 @@ ADMIN_ID = 7055472251  # ← ЗАМЕНИТЕ на свой Telegram ID
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Словарь для отслеживания активных чатов: user_id -> other_id
+active_chats = {}
+
 def get_ref_code(user_id):
     return hashlib.md5(str(user_id).encode()).hexdigest()[:8]
 
@@ -71,6 +74,9 @@ def format_profile(row):
 # ---------- Открытие чата ----------
 async def open_chat(user_id, other_id, message: types.Message):
     """Открывает чат для пользователя (отправляет историю и клавиатуру)"""
+    # Запоминаем активный чат
+    active_chats[user_id] = other_id
+
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             other_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", other_id)
@@ -562,6 +568,10 @@ async def exit_chat_button(message: types.Message, state: FSMContext):
     data = await state.get_data()
     other_id = data.get("chat_with")
     await state.clear()
+    # Удаляем из активных чатов
+    if uid in active_chats:
+        del active_chats[uid]
+
     await show_menu(message)
 
     if other_id:
@@ -612,6 +622,9 @@ async def chat_message(message: types.Message, state: FSMContext):
     if not match_exists:
         await message.answer("Этот чат закрыт, так как собеседник вышел.")
         await state.clear()
+        # Удаляем из активных чатов
+        if uid in active_chats:
+            del active_chats[uid]
         await show_menu(message)
         return
 
@@ -620,13 +633,19 @@ async def chat_message(message: types.Message, state: FSMContext):
         async with pool.acquire() as conn:
             sender_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
 
-    # Создаём клавиатуру с кнопкой "Ответить"
-    reply_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Ответить", callback_data=f"chat_{uid}")]
-    ])
+    # Определяем, нужно ли отправлять кнопку "Ответить"
+    # Если получатель сейчас активен в чате с нами, кнопку не отправляем
+    reply_markup = None
+    if active_chats.get(other_id) != uid:
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Ответить", callback_data=f"chat_{uid}")]
+        ])
 
     try:
-        await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}", reply_markup=reply_kb)
+        if reply_markup:
+            await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}", reply_markup=reply_markup)
+        else:
+            await bot.send_message(other_id, f"💬 {sender_name or 'Пользователь'}: {message.text}")
     except Exception as e:
         await message.answer(f"Не удалось отправить сообщение: {e}")
         return
@@ -654,6 +673,9 @@ async def block_user(call: types.CallbackQuery):
             await conn.execute("DELETE FROM likes WHERE from_user=$1 AND to_user=$2", uid, blocked_id)
             await conn.execute("DELETE FROM likes WHERE from_user=$1 AND to_user=$2", blocked_id, uid)
             await conn.execute("DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)", uid, blocked_id)
+    # Если заблокированный пользователь был в активном чате, удаляем
+    if uid in active_chats and active_chats[uid] == blocked_id:
+        del active_chats[uid]
     await call.message.answer("🚫 Пользователь заблокирован. Он больше не появится в поиске.")
     await call.answer()
 
