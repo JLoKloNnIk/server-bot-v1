@@ -1,3 +1,3 @@
-BOT_TOKEN = "СЮДИ_ВСТАВТЕ_ТОКЕН_ВІД_BOTFATHER"
+BOT_TOKEN = "7885362205:AAEZtEE6FTzvaiYCfhyOVC0kZSnirXJUeEw"
 # Для донатів (Telegram Stars) токен не потрібен, залиште порожнім
 PAYMENT_TOKEN = ""
