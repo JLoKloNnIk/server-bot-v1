@@ -428,9 +428,15 @@ async def like(call: types.CallbackQuery, state: FSMContext):
                 await call.answer("У вас закончились лайки! Пополните через 💎 Донат или пригласите друзей.", show_alert=True)
                 return
 
-            # Сохраняем лайк и уменьшаем баланс
-            await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2) ON CONFLICT DO NOTHING", uid, target)
-            await conn.execute("UPDATE users SET balance = balance - 1 WHERE user_id=$1", uid)
+# Проверяем, есть ли уже лайк
+already_liked = await conn.fetchval("SELECT 1 FROM likes WHERE from_user=$1 AND to_user=$2", uid, target)
+if not already_liked:
+    # Добавляем лайк и уменьшаем баланс
+    await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2)", uid, target)
+    await conn.execute("UPDATE users SET balance = balance - 1 WHERE user_id=$1", uid)
+else:
+    await call.answer("Вы уже лайкали этого пользователя.", show_alert=True)
+    return
 
             # Проверяем взаимность
             mutual = await conn.fetchrow("SELECT * FROM likes WHERE from_user=$1 AND to_user=$2", target, uid)
