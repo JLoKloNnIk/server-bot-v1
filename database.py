@@ -6,7 +6,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        # Таблица пользователей
+        # Пользователи
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -29,7 +29,7 @@ async def init_db():
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS description TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS interests TEXT")
 
-        # Остальные таблицы без изменений
+        # Лайки
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS likes (
                 from_user BIGINT,
@@ -38,6 +38,7 @@ async def init_db():
             )
         ''')
 
+        # Матчи (взаимные лайки)
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS matches (
                 user1 BIGINT,
@@ -47,6 +48,7 @@ async def init_db():
             )
         ''')
 
+        # Рефералы
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS referrals (
                 inviter_id BIGINT,
@@ -55,6 +57,7 @@ async def init_db():
             )
         ''')
 
+        # Сообщения чата
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -65,6 +68,7 @@ async def init_db():
             )
         ''')
 
+        # Фильтры
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS filters (
                 user_id BIGINT PRIMARY KEY,
@@ -75,6 +79,7 @@ async def init_db():
             )
         ''')
 
+        # Жалобы
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS reports (
                 id SERIAL PRIMARY KEY,
@@ -82,6 +87,16 @@ async def init_db():
                 reported_id BIGINT,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Блокировки
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS blocks (
+                user_id BIGINT,
+                blocked_user_id BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, blocked_user_id)
             )
         ''')
     finally:
