@@ -68,6 +68,35 @@ def format_profile(row):
         text += f"\n🎯 <b>Интересы:</b> {row['interests']}"
     return text
 
+# ---------- Открытие чата ----------
+async def open_chat(user_id, other_id, message: types.Message):
+    """Открывает чат для пользователя (отправляет историю и клавиатуру)"""
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            other_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", other_id)
+            match_id = f"{min(user_id, other_id)}_{max(user_id, other_id)}"
+            messages = await conn.fetch("""
+                SELECT sender_id, text, timestamp FROM messages
+                WHERE match_id = $1
+                ORDER BY timestamp DESC LIMIT 10
+            """, match_id)
+            messages = messages[::-1]  # хронологический порядок
+
+    history_text = "📜 Последние сообщения:\n\n" if messages else "Сообщений пока нет.\n"
+    for msg in messages:
+        sender = "Вы" if msg['sender_id'] == user_id else other_name or "Собеседник"
+        history_text += f"{sender}: {msg['text']}\n"
+
+    exit_kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🚪 Выйти из чата")]],
+        resize_keyboard=True
+    )
+    await message.answer(
+        f"💞 Чат с {other_name or 'Собеседник'} открыт.\n\n{history_text}\n"
+        f"Напишите сообщение или нажмите кнопку для выхода.",
+        reply_markup=exit_kb
+    )
+
 # ---------- Старт и регистрация ----------
 @dp.message(CommandStart())
 async def start(message: types.Message, command: CommandObject, state: FSMContext):
@@ -114,7 +143,6 @@ async def my_profile(message: types.Message):
 # ---------- Заполнение/редактирование анкеты ----------
 @dp.message(F.text == "✏️ Заполнить анкету")
 async def start_profile(message: types.Message, state: FSMContext):
-    # Проверяем, есть ли уже профиль
     uid = message.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
@@ -232,6 +260,8 @@ async def search(message: types.Message):
                 SELECT user_id, name, age, city, photo_id, description, interests FROM users
                 WHERE user_id != $1 AND user_id NOT IN
                     (SELECT to_user FROM likes WHERE from_user = $1)
+                    AND user_id NOT IN (SELECT blocked_user_id FROM blocks WHERE user_id = $1)
+                    AND user_id NOT IN (SELECT user_id FROM blocks WHERE blocked_user_id = $1)
             """
             params = [uid]
             if preferred_gender and preferred_gender != 'any':
@@ -253,7 +283,6 @@ async def search(message: types.Message):
                 await message.answer("😔 Пока нет анкет по вашим фильтрам.")
                 return
             target_id = row['user_id']
-            # Краткая информация
             caption = (
                 f"👤 <b>{row['name']}</b>, {row['age']}\n"
                 f"📍 {row['city'] or 'Город не указан'}"
@@ -301,33 +330,60 @@ async def back_to_search(call: types.CallbackQuery):
     await call.message.delete()
     await search(call.message)
 
-# Обработчики лайков и дизлайков
+# Обработчик лайка
 @dp.callback_query(F.data.startswith("like_"))
-async def like(call: types.CallbackQuery):
+async def like(call: types.CallbackQuery, state: FSMContext):
     target = int(call.data.split("_")[1])
     uid = call.from_user.id
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
+            # Проверяем баланс
+            balance = await conn.fetchval("SELECT balance FROM users WHERE user_id=$1", uid)
+            if balance is None:
+                await call.answer("Сначала создайте анкету!", show_alert=True)
+                return
+            if balance <= 0:
+                await call.answer("У вас закончились лайки! Пополните через 💰 Донат или пригласите друзей.", show_alert=True)
+                return
+
+            # Сохраняем лайк и уменьшаем баланс
             await conn.execute("INSERT INTO likes (from_user, to_user) VALUES ($1,$2) ON CONFLICT DO NOTHING", uid, target)
+            await conn.execute("UPDATE users SET balance = balance - 1 WHERE user_id=$1", uid)
+
+            # Проверяем взаимность
             mutual = await conn.fetchrow("SELECT * FROM likes WHERE from_user=$1 AND to_user=$2", target, uid)
             if mutual:
-                # Взаимный лайк — создаём мэтч
+                # Создаём мэтч
                 user1, user2 = min(uid, target), max(uid, target)
                 await conn.execute("INSERT INTO matches (user1, user2) VALUES ($1,$2) ON CONFLICT DO NOTHING", user1, user2)
                 name_uid = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", uid)
                 name_target = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", target)
-                await call.message.answer("💞 Взаимный лайк! Теперь вы можете общаться в чате.")
+
+                # Открываем чат для текущего пользователя
+                await state.update_data(chat_with=target)
+                await state.set_state(ChatState.active_chat)
+                await open_chat(uid, target, call.message)
+
+                # Уведомляем второго пользователя с кнопкой "Открыть чат"
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💬 Открыть чат", callback_data=f"chat_{uid}")]
+                ])
                 try:
-                    await bot.send_message(target, f"💞 У вас новый мэтч с {name_uid}! Перейдите в '💬 Мои чаты'.")
+                    await bot.send_message(
+                        target,
+                        f"💞 У вас новый мэтч с {name_uid}!",
+                        reply_markup=kb
+                    )
                 except:
                     pass
             else:
-                # Отправляем уведомление получателю (анонимно)
+                # Анонимное уведомление получателю
                 try:
                     await bot.send_message(target, "❤️ Кто-то лайкнул вашу анкету! Зайдите в поиск, чтобы возможно ответить взаимностью.")
                 except Exception:
                     pass
-                await call.message.answer("Лайк отправлен! Ждите ответа.")
+                await call.message.answer(f"Лайк отправлен! Осталось лайков: {balance-1}")
+
     await call.message.delete()
     await search(call.message)
 
@@ -478,27 +534,32 @@ async def my_chats(message: types.Message):
 async def start_chat(call: types.CallbackQuery, state: FSMContext):
     other_id = int(call.data.split("_")[1])
     uid = call.from_user.id
-    await state.update_data(chat_with=other_id)
-    await state.set_state(ChatState.active_chat)
-
+    # Проверяем, не заблокирован ли
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
-            other_name = await conn.fetchval("SELECT name FROM users WHERE user_id=$1", other_id)
-
-    exit_kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🚪 Выйти из чата")]],
-        resize_keyboard=True
-    )
-    await call.message.answer(
-        f"Вы общаетесь с {other_name or 'Собеседник'}.\nНапишите сообщение или нажмите кнопку для выхода.",
-        reply_markup=exit_kb
-    )
+            blocked = await conn.fetchval("SELECT 1 FROM blocks WHERE user_id=$1 AND blocked_user_id=$2", uid, other_id)
+            if blocked:
+                await call.answer("Вы заблокировали этого пользователя.", show_alert=True)
+                return
+    await state.update_data(chat_with=other_id)
+    await state.set_state(ChatState.active_chat)
+    await open_chat(uid, other_id, call.message)
     await call.answer()
 
 @dp.message(ChatState.active_chat, F.text == "🚪 Выйти из чата")
 async def exit_chat_button(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    other_id = data.get("chat_with")
     await state.clear()
     await show_menu(message)
+    if other_id:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{other_id}"),
+                InlineKeyboardButton(text="⚠️ Пожаловаться", callback_data=f"report_{other_id}")
+            ]
+        ])
+        await message.answer("Вы вышли из чата. Что хотите сделать?", reply_markup=kb)
 
 @dp.message(ChatState.active_chat, F.text)
 async def chat_message(message: types.Message, state: FSMContext):
@@ -526,6 +587,37 @@ async def chat_message(message: types.Message, state: FSMContext):
                 "INSERT INTO messages (match_id, sender_id, text) VALUES ($1,$2,$3)",
                 match_id, message.from_user.id, message.text
             )
+
+# ---------- Блокировка и жалоба ----------
+@dp.callback_query(F.data.startswith("block_"))
+async def block_user(call: types.CallbackQuery):
+    blocked_id = int(call.data.split("_")[1])
+    uid = call.from_user.id
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO blocks (user_id, blocked_user_id) VALUES ($1,$2)
+                ON CONFLICT DO NOTHING
+            """, uid, blocked_id)
+            # Удаляем лайки и мэтчи, чтобы они больше не видели друг друга
+            await conn.execute("DELETE FROM likes WHERE from_user=$1 AND to_user=$2", uid, blocked_id)
+            await conn.execute("DELETE FROM likes WHERE from_user=$1 AND to_user=$2", blocked_id, uid)
+            await conn.execute("DELETE FROM matches WHERE (user1=$1 AND user2=$2) OR (user1=$2 AND user2=$1)", uid, blocked_id)
+    await call.message.answer("🚫 Пользователь заблокирован. Он больше не появится в поиске.")
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("report_"))
+async def report_user(call: types.CallbackQuery):
+    reported_id = int(call.data.split("_")[1])
+    uid = call.from_user.id
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO reports (reporter_id, reported_id, reason)
+                VALUES ($1, $2, $3)
+            """, uid, reported_id, "Пожаловался из чата")
+    await call.message.answer("⚠️ Жалоба отправлена администрации. Спасибо!")
+    await call.answer()
 
 # ---------- Донат ----------
 @dp.message(F.text == "💰 Донат")
