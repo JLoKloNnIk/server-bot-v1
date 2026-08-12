@@ -59,7 +59,7 @@ async def show_menu(message: types.Message):
 async def start(message: types.Message, command: CommandObject, state: FSMContext):
     user_id = message.from_user.id
     ref = command.args
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         user = await db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
         if not await user.fetchone():
             code = get_ref_code(user_id)
@@ -132,7 +132,7 @@ async def profile_photo(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
     data = await state.get_data()
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         # Проверяем, существует ли запись
         cur = await db.execute("SELECT user_id FROM users WHERE user_id=?", (uid,))
         if await cur.fetchone():
@@ -156,7 +156,7 @@ async def profile_photo(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🔍 Дивитись анкети")
 async def search(message: types.Message):
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         # Получаем фильтры
         filt = await db.execute("SELECT * FROM filters WHERE user_id=?", (uid,))
         filt = await filt.fetchone()
@@ -205,7 +205,7 @@ async def search(message: types.Message):
 async def like(call: types.CallbackQuery):
     target = int(call.data.split("_")[1])
     uid = call.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("INSERT OR IGNORE INTO likes VALUES (?,?)", (uid, target))
         await db.commit()
         cur = await db.execute("SELECT * FROM likes WHERE from_user=? AND to_user=?", (target, uid))
@@ -214,7 +214,7 @@ async def like(call: types.CallbackQuery):
             await db.execute("INSERT OR IGNORE INTO matches (user1, user2) VALUES (?,?)", (user1, user2))
             await db.commit()
             # Получаем имена для уведомлений
-            async with aiosqlite.connect("dating.db") as db:
+            async with aiosqlite.connect("asyncpg") as db:
                 cur2 = await db.execute("SELECT name FROM users WHERE user_id=?", (uid,))
                 name_uid = (await cur2.fetchone())[0]
                 cur2 = await db.execute("SELECT name FROM users WHERE user_id=?", (target,))
@@ -238,7 +238,7 @@ async def skip(call: types.CallbackQuery):
 @dp.message(F.text == "⚙️ Фільтри")
 async def filter_menu(message: types.Message):
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         cur = await db.execute("SELECT * FROM filters WHERE user_id=?", (uid,))
         filt = await cur.fetchone()
     if filt:
@@ -261,7 +261,7 @@ async def filter_menu(message: types.Message):
 @dp.callback_query(F.data == "filter_reset")
 async def reset_filters(call: types.CallbackQuery):
     uid = call.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("DELETE FROM filters WHERE user_id=?", (uid,))
         await db.commit()
     await call.message.answer("Фільтри скинуто.")
@@ -282,7 +282,7 @@ async def filter_gender_start(call: types.CallbackQuery):
 async def filter_gender_set(call: types.CallbackQuery):
     val = call.data.split("_")[1]  # male, female, any
     uid = call.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("""
             INSERT INTO filters (user_id, preferred_gender) VALUES (?,?)
             ON CONFLICT(user_id) DO UPDATE SET preferred_gender=?
@@ -324,7 +324,7 @@ async def filter_max_age(message: types.Message, state: FSMContext):
         await message.answer("Мінімальний вік не може бути більшим за максимальний.")
         return
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("""
             INSERT INTO filters (user_id, min_age, max_age) VALUES (?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET min_age=?, max_age=?
@@ -344,7 +344,7 @@ async def filter_city_start(call: types.CallbackQuery, state: FSMContext):
 async def filter_city_set(message: types.Message, state: FSMContext):
     city = message.text.strip()
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("""
             INSERT INTO filters (user_id, city) VALUES (?,?)
             ON CONFLICT(user_id) DO UPDATE SET city=?
@@ -357,7 +357,7 @@ async def filter_city_set(message: types.Message, state: FSMContext):
 @dp.message(F.text == "💬 Мої чати")
 async def my_chats(message: types.Message):
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         cur = await db.execute("""
             SELECT user1, user2 FROM matches
             WHERE user1=? OR user2=?
@@ -369,7 +369,7 @@ async def my_chats(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for u1, u2 in matches:
         other = u1 if u2 == uid else u2
-        async with aiosqlite.connect("dating.db") as db:
+        async with aiosqlite.connect("asyncpg") as db:
             cur = await db.execute("SELECT name FROM users WHERE user_id=?", (other,))
             row = await cur.fetchone()
             name = row[0] if row else "Користувач"
@@ -384,7 +384,7 @@ async def start_chat(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(ChatState.active_chat)
 
     # Получаем имя собеседника
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         cur = await db.execute("SELECT name FROM users WHERE user_id=?", (other_id,))
         row = await cur.fetchone()
         other_name = row[0] if row else "Співрозмовник"
@@ -416,7 +416,7 @@ async def chat_message(message: types.Message, state: FSMContext):
         return
 
     # Получаем имя отправителя
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         cur = await db.execute("SELECT name FROM users WHERE user_id=?", (message.from_user.id,))
         row = await cur.fetchone()
         sender_name = row[0] if row else "Користувач"
@@ -429,7 +429,7 @@ async def chat_message(message: types.Message, state: FSMContext):
         return
 
     # Сохраняем в историю
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         match_id = f"{min(message.from_user.id, other_id)}_{max(message.from_user.id, other_id)}"
         await db.execute(
             "INSERT INTO messages (match_id, sender_id, text) VALUES (?,?,?)",
@@ -458,7 +458,7 @@ async def pre_checkout(query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: types.Message):
     uid = message.from_user.id
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         await db.execute("UPDATE users SET balance = balance + 5 WHERE user_id = ?", (uid,))
         await db.commit()
     await message.answer("✅ Дякуємо! Ви отримали +5 лайків.")
@@ -466,7 +466,7 @@ async def successful_payment(message: types.Message):
 # ---------- Реферальная система ----------
 @dp.message(F.text == "🔗 Моє реферальне посилання")
 async def my_ref(message: types.Message):
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         cur = await db.execute("SELECT ref_code FROM users WHERE user_id=?", (message.from_user.id,))
         code = await cur.fetchone()
         if code:
@@ -484,7 +484,7 @@ async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("⛔ Немає доступу.")
         return
-    async with aiosqlite.connect("dating.db") as db:
+    async with aiosqlite.connect("asyncpg") as db:
         users = await db.execute("SELECT COUNT(*) FROM users")
         users = (await users.fetchone())[0]
         matches = await db.execute("SELECT COUNT(*) FROM matches")
